@@ -87,6 +87,9 @@ func TestParseDetailJSON(t *testing.T) {
 	if p.OfficialURL != "https://www.ups.com" || p.Timezone != "-05:00" || len(p.Events) != 1 {
 		t.Fatalf("%#v", p)
 	}
+	if p.LastEventAt != "2026-10-01T17:00:00Z" {
+		t.Fatalf("LastEventAt must be time_utc only, got %q", p.LastEventAt)
+	}
 	if p.OriginCountry != "CN" || p.DestinationCity != "LA" || p.DestinationPostal != "90001" {
 		t.Fatalf("shipping %#v", p)
 	}

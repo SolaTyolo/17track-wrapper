@@ -1,8 +1,9 @@
 -- Package-centric tracking store (schema: tracking).
--- Owned by 17track-wrapper: embedded and applied on cmd/tracking startup
+-- Owned by this service: embedded and applied on cmd/tracking startup
 -- (ledger: tracking.schema_migrations). Same model as GoTrue for auth.
--- Hot: package + tracking_event; cold archive via obj-gateway (archive_key).
--- Unit of tracking: tracking_number (UNIQUE).
+-- Hot: package + tracking_event; cold archive on S3-compatible storage (archive_key).
+-- Unit of tracking: a package generation. Carriers recycle numbers, so
+-- tracking_number is unique only among current generations (superseded_at IS NULL).
 -- TrackingService is the single 17TRACK subscriber; shipment waybills use source='shipment'.
 -- STOPPED = provider stop, retrackable once.
 --
@@ -14,8 +15,6 @@ CREATE SCHEMA IF NOT EXISTS tracking;
 CREATE TABLE IF NOT EXISTS tracking.package (
     package_id              bigserial PRIMARY KEY,
     tracking_number         text NOT NULL,           -- 17TRACK number
-    carrier_code            text NOT NULL DEFAULT '', -- local alias / display
-    provider_name           text NOT NULL DEFAULT '17track',
     external_ref            text NOT NULL DEFAULT '', -- shipment / order correlation
     weight                  numeric,                  -- misc_info.weight_kg
 
@@ -55,13 +54,14 @@ CREATE TABLE IF NOT EXISTS tracking.package (
     latest_update_at        timestamptz,
 
     -- 17TRACK subscription control
-    carrier_mode            text, -- NULL = Auto
-    sdk_carrier_key         int,  -- resolved 17TRACK carrier key (0/NULL = auto)
+    carrier                 int NOT NULL DEFAULT 0, -- 17TRACK carrier key (0 = auto-detect)
     tag                     text, -- 17TRACK tag
     subscription_status     text NOT NULL DEFAULT 'REGISTERING',
     source                  text NOT NULL DEFAULT 'api',
     is_retracked            boolean NOT NULL DEFAULT false,
     cancelled_at            timestamptz,
+    register_params         jsonb NOT NULL DEFAULT '{}', -- last /register request for retries
+    superseded_at           timestamptz, -- set when a newer generation of the same number was registered
 
     -- Return detection (service rules on 17TRACK events)
     has_return              boolean NOT NULL DEFAULT false,
@@ -72,22 +72,31 @@ CREATE TABLE IF NOT EXISTS tracking.package (
     last_callback_at        timestamptz, -- last 17TRACK data received (webhook or poll)
 
     created_at              timestamptz NOT NULL DEFAULT now(),
-    updated_at              timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (tracking_number)
+    updated_at              timestamptz NOT NULL DEFAULT now()
 );
 
+-- At most one current generation per tracking_number; history stays by package_id.
+CREATE UNIQUE INDEX IF NOT EXISTS package_current_number_key
+    ON tracking.package (tracking_number) WHERE superseded_at IS NULL;
+CREATE INDEX IF NOT EXISTS package_number_history_idx
+    ON tracking.package (tracking_number, package_id DESC);
 CREATE INDEX IF NOT EXISTS package_status_idx
     ON tracking.package (status, package_id DESC);
 CREATE INDEX IF NOT EXISTS package_subscription_id_idx
     ON tracking.package (subscription_status, package_id);
+-- Archive: inactive packages untouched for the retention window (updated_at anchor).
 CREATE INDEX IF NOT EXISTS package_due_archive_idx
-    ON tracking.package (delivered_at)
-    WHERE is_archived = false AND delivered_at IS NOT NULL;
+    ON tracking.package (updated_at)
+    WHERE is_archived = false AND subscription_status NOT IN ('REGISTERING', 'TRACKING');
 CREATE INDEX IF NOT EXISTS package_return_idx
     ON tracking.package (has_return, status);
 
 COMMENT ON TABLE tracking.package IS
-    '包裹聚合：17TRACK 物流快照 + 订阅/归档/退件；按运单号唯一。';
+    '包裹聚合：17TRACK 物流快照 + 订阅/归档/退件；运单号可被承运商回收，每行是一代，当前代 superseded_at IS NULL 唯一。';
+COMMENT ON COLUMN tracking.package.carrier IS '17TRACK carrier key (0 = auto-detect)';
+COMMENT ON COLUMN tracking.package.superseded_at IS 'set when a newer generation of the same tracking_number was registered';
+COMMENT ON COLUMN tracking.package.last_callback_at IS
+    'last 17TRACK data received (webhook or poll); SyncActive skips recently heard packages';
 
 CREATE TABLE IF NOT EXISTS tracking.tracking_event (
     event_id            bigserial PRIMARY KEY,
@@ -101,6 +110,8 @@ CREATE TABLE IF NOT EXISTS tracking.tracking_event (
     state               text NOT NULL DEFAULT '',
     city                text NOT NULL DEFAULT '',
     postal_code         text NOT NULL DEFAULT '',
+    latitude            double precision, -- event.address.coordinates
+    longitude           double precision,
     event_fingerprint   text NOT NULL,
     created_at          timestamptz NOT NULL DEFAULT now(),
     UNIQUE (package_id, event_fingerprint)

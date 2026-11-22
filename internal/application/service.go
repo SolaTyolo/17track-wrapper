@@ -420,10 +420,8 @@ func batchFromParsed(tn string, parsed track17.ParsedTrack) domain.EventBatch {
 	if t := parseEventTime(parsed.EstimatedDeliveryTo); t != nil {
 		batch.ShippingDetail.EstimatedDeliveryTo = t
 	}
-	if parsed.LastEventAt != "" {
-		if t, err := time.Parse(time.RFC3339, parsed.LastEventAt); err == nil {
-			batch.UpdateTime = t
-		}
+	if t := parseEventTime(parsed.LastEventAt); t != nil {
+		batch.UpdateTime = *t // already UTC; from latest_event.time_utc only
 	}
 	milestones := domain.Milestones{}
 	for key, ts := range parsed.Milestones {
@@ -444,7 +442,8 @@ func batchFromParsed(tn string, parsed track17.ParsedTrack) domain.EventBatch {
 	batch.Milestones = milestones
 
 	for _, ev := range parsed.Events {
-		et := parseEventTime(firstNonEmpty(ev.TimeISO, ev.TimeUTC))
+		// Prefer time_utc (absolute); fall back to time_iso only if UTC missing.
+		et := parseEventTime(firstNonEmpty(ev.TimeUTC, ev.TimeISO))
 		// Untimed events fingerprint on the zero time so redeliveries dedupe; event_time
 		// then records when the line was first seen.
 		var fpTime time.Time

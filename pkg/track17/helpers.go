@@ -112,7 +112,9 @@ func ParseDetail(detail *sdk.TrackDetail) ParsedTrack {
 		p.SubStatusDesc = ti.LatestStatus.SubStatusDescr
 	}
 	if ti.LatestEvent != nil {
-		p.LastEventAt = firstNonEmpty(ti.LatestEvent.TimeUTC, ti.LatestEvent.TimeISO)
+		// Prefer time_utc only — time_iso is local-with-offset and must not drive
+		// latest_event_time / UpdateTime (stored as timestamptz UTC).
+		p.LastEventAt = strings.TrimSpace(ti.LatestEvent.TimeUTC)
 		if ti.LatestEvent.TimeRaw != nil {
 			p.Timezone = ti.LatestEvent.TimeRaw.Timezone
 		}
