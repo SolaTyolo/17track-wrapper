@@ -456,6 +456,8 @@ func batchFromParsed(tn string, parsed track17.ParsedTrack) domain.EventBatch {
 		te := domain.TrackingEvent{
 			TrackingNumber: tn,
 			EventTime:      *et,
+			TimeISO:        strings.TrimSpace(ev.TimeISO),
+			Timezone:       strings.TrimSpace(ev.Timezone),
 			Stage:          ev.Stage,
 			SubStatus:      ev.SubStatus,
 			Description:    ev.Description,

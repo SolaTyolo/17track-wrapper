@@ -331,13 +331,26 @@ func scanPackage(row pgx.Row) (*domain.Package, error) {
 	return &pkg, nil
 }
 
+// Insert new events; on fingerprint conflict, backfill empty time_iso/timezone from 17TRACK
+// without treating the row as a newly inserted event (xmax=0 → insert).
 const insertEventSQL = `
 INSERT INTO tracking.tracking_event (
-    package_id, event_time, stage, sub_status, description, location,
+    package_id, event_time, time_iso, timezone, stage, sub_status, description, location,
     country, state, city, postal_code, latitude, longitude, event_fingerprint
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-ON CONFLICT (package_id, event_fingerprint) DO NOTHING
-RETURNING event_id, created_at`
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+ON CONFLICT (package_id, event_fingerprint) DO UPDATE
+SET
+  time_iso = CASE
+    WHEN EXCLUDED.time_iso <> '' THEN EXCLUDED.time_iso
+    ELSE tracking.tracking_event.time_iso
+  END,
+  timezone = CASE
+    WHEN EXCLUDED.timezone <> '' THEN EXCLUDED.timezone
+    ELSE tracking.tracking_event.timezone
+  END
+WHERE (tracking.tracking_event.time_iso = '' AND EXCLUDED.time_iso <> '')
+   OR (tracking.tracking_event.timezone = '' AND EXCLUDED.timezone <> '')
+RETURNING event_id, created_at, (xmax = 0) AS is_insert`
 
 func (r *PostgresRepository) InsertEvents(ctx context.Context, events []domain.TrackingEvent) ([]domain.TrackingEvent, error) {
 	if len(events) == 0 {
@@ -346,7 +359,8 @@ func (r *PostgresRepository) InsertEvents(ctx context.Context, events []domain.T
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		batch.Queue(insertEventSQL,
-			ev.PackageID, ev.EventTime, ev.Stage, ev.SubStatus, ev.Description, ev.Location,
+			ev.PackageID, ev.EventTime, ev.TimeISO, ev.Timezone,
+			ev.Stage, ev.SubStatus, ev.Description, ev.Location,
 			ev.Address.Country, ev.Address.State, ev.Address.City, ev.Address.PostalCode,
 			ev.Latitude, ev.Longitude, ev.EventFingerprint,
 		)
@@ -355,21 +369,25 @@ func (r *PostgresRepository) InsertEvents(ctx context.Context, events []domain.T
 	defer func() { _ = br.Close() }()
 	var inserted []domain.TrackingEvent
 	for _, ev := range events {
-		err := br.QueryRow().Scan(&ev.EventID, &ev.CreatedAt)
+		var isInsert bool
+		err := br.QueryRow().Scan(&ev.EventID, &ev.CreatedAt, &isInsert)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		inserted = append(inserted, ev)
+		if isInsert {
+			inserted = append(inserted, ev)
+		}
 	}
 	return inserted, nil
 }
 
 func (r *PostgresRepository) ListEventsByPackage(ctx context.Context, packageID int64) ([]domain.TrackingEvent, error) {
 	rows, err := r.db.Query(ctx, `
-SELECT e.event_id, e.package_id, p.tracking_number, e.event_time, e.stage, e.sub_status,
+SELECT e.event_id, e.package_id, p.tracking_number, e.event_time, e.time_iso, e.timezone,
+       e.stage, e.sub_status,
        e.description, e.location, e.country, e.state, e.city, e.postal_code,
        e.latitude, e.longitude, e.event_fingerprint, e.created_at
 FROM tracking.tracking_event e
@@ -385,6 +403,7 @@ ORDER BY e.event_time ASC, e.event_id ASC`, packageID)
 		var ev domain.TrackingEvent
 		if err := rows.Scan(
 			&ev.EventID, &ev.PackageID, &ev.TrackingNumber, &ev.EventTime,
+			&ev.TimeISO, &ev.Timezone,
 			&ev.Stage, &ev.SubStatus,
 			&ev.Description, &ev.Location,
 			&ev.Address.Country, &ev.Address.State, &ev.Address.City, &ev.Address.PostalCode,

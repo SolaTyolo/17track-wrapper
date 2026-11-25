@@ -101,7 +101,11 @@ COMMENT ON COLUMN tracking.package.last_callback_at IS
 CREATE TABLE IF NOT EXISTS tracking.tracking_event (
     event_id            bigserial PRIMARY KEY,
     package_id          bigint NOT NULL REFERENCES tracking.package (package_id) ON DELETE CASCADE,
+    -- Absolute instant (UTC); used for ordering / fingerprint. Prefer time_utc from 17TRACK.
     event_time          timestamptz NOT NULL,
+    -- Local wall clock for UI (do not re-format via browser TZ).
+    time_iso            text NOT NULL DEFAULT '', -- event.time_iso, e.g. 2026-11-24T15:07:00+01:00
+    timezone            text NOT NULL DEFAULT '', -- event.time_raw.timezone, e.g. +01:00
     stage               text NOT NULL DEFAULT '', -- event.stage / milestone.key_stage (domain.Stage*)
     sub_status          text NOT NULL DEFAULT '', -- event.sub_status (domain.SubStatus*)
     description         text NOT NULL DEFAULT '',
@@ -122,3 +126,9 @@ CREATE INDEX IF NOT EXISTS tracking_event_package_time_idx
 
 COMMENT ON TABLE tracking.tracking_event IS
     '轨迹事件热存（对齐 17TRACK providers[].events）；按指纹去重；归档后删热行。';
+COMMENT ON COLUMN tracking.tracking_event.event_time IS
+    '事件绝对时间（timestamptz / UTC）；排序与指纹用；优先取 17TRACK time_utc。';
+COMMENT ON COLUMN tracking.tracking_event.time_iso IS
+    '17TRACK event.time_iso：当地墙钟+offset（如 2026-11-24T15:07:00+01:00）；UI 展示用，勿按浏览器时区再转。';
+COMMENT ON COLUMN tracking.tracking_event.timezone IS
+    '17TRACK event.time_raw.timezone：当地偏移（如 +01:00）；time_iso 缺失时可用 event_time+offset 还原墙钟。';

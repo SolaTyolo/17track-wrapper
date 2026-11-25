@@ -14,6 +14,9 @@ type TrackingEvent struct {
 	PackageID        int64     `json:"package_id"`
 	TrackingNumber   string    `json:"tracking_number"`
 	EventTime        time.Time `json:"event_time"`
+	// TimeISO / Timezone preserve 17TRACK local wall clock for UI (not browser TZ).
+	TimeISO          string    `json:"time_iso,omitempty"`
+	Timezone         string    `json:"timezone,omitempty"`
 	Stage            string    `json:"stage,omitempty"`
 	SubStatus        string    `json:"sub_status,omitempty"`
 	Description      string    `json:"description,omitempty"`
